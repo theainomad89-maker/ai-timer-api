@@ -168,6 +168,24 @@ function normalizeAIToWorkoutJSON(ai, text) {
     }
   } catch {}
 
+  // New AI format: { blocks: [{ rounds, exercises: [{name, duration_seconds}] }] }
+  if (ai && Array.isArray(ai.blocks) && ai.blocks[0]?.exercises) {
+    const block = ai.blocks[0];
+    if (Array.isArray(block.exercises)) {
+      const seq = analyzeAndFixSequence(block.exercises, text);
+      const sets = Number(block.rounds || 1);
+      const work = seq[0]?.seconds || 20;
+
+      return {
+        title: ai.title || "Intervals",
+        total_minutes: Number(ai.total_minutes || Math.ceil((sets * seq.reduce((a,b)=>a+b.seconds+(b.rest_after_seconds||0),0))/60) || 10),
+        blocks: [{ type:"INTERVAL", work_seconds: work, rest_seconds: 0, sets, sequence: seq }],
+        cues: { start:true, last_round:true, halfway: sets>=8, tts:true },
+        debug: { used_ai:true, inferred_mode:"INTERVAL(sequence)", notes:"normalized blocks/exercises format" }
+      };
+    }
+  }
+
   // Common raw shape #1: { workout_type, rounds, exercises:[{name,duration}], total_minutes }
   if (ai && ai.workout_type === "INTERVAL" && Array.isArray(ai.exercises)) {
     const seq = analyzeAndFixSequence(ai.exercises, text);
