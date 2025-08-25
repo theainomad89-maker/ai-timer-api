@@ -2,8 +2,9 @@
   "name": "ai-timer-api",
   "type": "module",
   "scripts": {
-    "dev": "node --watch server.ts",
-    "start": "node server.ts"
+    "dev": "node --watch server.js",
+    "start": "node server.js",
+    "build": "echo 'No build step needed for JS'"
   },
   "dependencies": {
     "fastify": "^4.26.2",
