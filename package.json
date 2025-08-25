@@ -1,0 +1,14 @@
+{
+  "name": "ai-timer-api",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch server.ts",
+    "start": "node server.ts"
+  },
+  "dependencies": {
+    "fastify": "^4.26.2",
+    "openai": "^4.56.0",
+    "zod": "^3.23.8",
+    "cors": "^2.8.5"
+  }
+}
