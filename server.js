@@ -28,8 +28,29 @@ CRITICAL RULES:
 5. Never treat "rest" as an exercise - it's a rest period between exercises
 6. If text says "rest" after exercises, create proper rest events
 
+REQUIRED JSON STRUCTURE:
+{
+  "title": "Workout Name",
+  "total_minutes": number,
+  "blocks": [
+    {
+      "type": "INTERVAL",
+      "work_seconds": number,
+      "rest_seconds": number,
+      "sets": number,
+      "sequence": [
+        {
+          "name": "Exercise Name",
+          "seconds": number,
+          "rest_after_seconds": number (optional)
+        }
+      ]
+    }
+  ]
+}
+
 EXAMPLES:
-- "20s A, 20s B, rest" → sequence: [A(20s), B(20s), Rest(15s)]
+- "20s A, 20s B, rest" → sequence: [A(20s), B(20s, rest_after_seconds: 15)]
 - "EMOM: odd burpees, even plank" → 60s events alternating between exercises
 - "10 rounds: 30s work, 15s rest" → 10 work events + 9 rest events
 
