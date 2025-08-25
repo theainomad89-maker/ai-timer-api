@@ -27,6 +27,7 @@ CRITICAL RULES:
 4. Always include total_minutes calculated from the actual workout duration
 5. Never treat "rest" as an exercise - it's a rest period between exercises
 6. If text says "rest" after exercises, create proper rest events
+7. IMPORTANT: Rest periods apply BETWEEN rounds, not just after individual exercises
 
 REQUIRED JSON STRUCTURE:
 {
@@ -50,7 +51,8 @@ REQUIRED JSON STRUCTURE:
 }
 
 EXAMPLES:
-- "20s A, 20s B, rest" → sequence: [A(20s), B(20s, rest_after_seconds: 15)]
+- "20s A, 20s B, rest. That's 1 round. Total 10 rounds" → 
+  sequence: [A(20s), B(20s, rest_after_seconds: 20)], sets: 10, total: 13.3 min
 - "EMOM: odd burpees, even plank" → 60s events alternating between exercises
 - "10 rounds: 30s work, 15s rest" → 10 work events + 9 rest events
 
@@ -140,33 +142,36 @@ function analyzeAndFixSequence(sequence, text) {
   
   const fixed = [];
   let hasRest = false;
+  let restDuration = 0;
   
+  // First pass: identify rest items and their duration
+  for (const item of sequence) {
+    const name = String(item.name || "").toLowerCase();
+    if (name.includes("rest") || name === "rest") {
+      hasRest = true;
+      restDuration = Number(item.duration || item.seconds || item.duration_seconds || 15);
+      break;
+    }
+  }
+  
+  // Second pass: build sequence with rest_after_seconds
   for (let i = 0; i < sequence.length; i++) {
     const item = sequence[i];
     const name = String(item.name || "").toLowerCase();
     
-    // If this is a rest item, convert it properly
+    // Skip rest items - they become rest_after_seconds
     if (name.includes("rest") || name === "rest") {
-      hasRest = true;
-      // Remove the rest item from sequence - it will be added as rest_after_seconds
       continue;
     }
     
-    // Check if next item is rest or if we need to add rest
-    let restAfter = 0;
-    if (i < sequence.length - 1) {
-      const nextItem = sequence[i + 1];
-      const nextName = String(nextItem.name || "").toLowerCase();
-      if (nextName.includes("rest") || nextName === "rest") {
-        restAfter = nextItem.duration || nextItem.seconds || 15;
-        hasRest = true;
-      }
-    }
+    // Add exercise with rest after (except for the last exercise in sequence)
+    const isLastExercise = i === sequence.length - 1 || 
+      (i < sequence.length - 1 && String(sequence[i + 1].name || "").toLowerCase().includes("rest"));
     
     fixed.push({
       name: item.name || item.exercise || "Work",
       seconds: Number(item.duration || item.seconds || item.duration_seconds || 20),
-      ...(restAfter > 0 ? { rest_after_seconds: restAfter } : {})
+      ...(hasRest && isLastExercise ? { rest_after_seconds: restDuration } : {})
     });
   }
   
