@@ -21,7 +21,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const SYSTEM = `You convert messy workout descriptions into a strict JSON schema.
 Rules:
 - Output ONLY JSON matching the schema.
-- If ambiguous, infer safe defaults: seconds if unit missing; rest 15–30s; beginner intensity by default.
+- If ambiguous, infer safe defaults: seconds if unit missing; rest 15–30s.
 - Support EMOM, INTERVAL (optionally with a per-set sequence), CIRCUIT, TABATA.
 - Include title, total_minutes.
 - For EMOM: minutes == total minutes; allow odd/even instructions.
@@ -107,97 +107,57 @@ function deterministicParse(text) {
   return parseEMOM(text) || parseTabata(text) || parseHiitSequence(text) || parseGenericIntervals(text);
 }
 
-function normalizeAIToWorkoutJSON(ai, text){
-  // If already in expected shape
-  if (ai && Array.isArray(ai.blocks)) return ai;
-  
-  // INTERVAL with exercises array - handle multiple formats
-  if ((ai?.type === "INTERVAL" || ai?.workout_type === "INTERVAL") && Array.isArray(ai.exercises)) {
-    const rounds = ai.rounds || 10;
-    const seq = [];
-    
-    for (const ex of ai.exercises) {
-      const name = ex.name || ex.exercise || "Work";
-      const secs = ex.duration_seconds || ex.duration || 30;
-      
-      // Handle rest items by attaching to previous exercise
-      if (/rest/i.test(name)) {
-        if (seq.length > 0) {
-          seq[seq.length - 1].rest_after_seconds = secs;
-        }
-        continue;
-      }
-      
-      seq.push({ name, seconds: secs });
+function normalizeAIToWorkoutJSON(ai, text) {
+  // Already in our schema?
+  try { 
+    // Basic validation that it has required fields
+    if (ai && typeof ai.title === "string" && Array.isArray(ai.blocks)) {
+      return ai;
     }
-    
-    return {
-      title: ai.title || "Intervals",
-      total_minutes: ai.total_minutes || Math.ceil((rounds * seq.reduce((a,b)=>a + b.seconds + (b.rest_after_seconds||0),0)) / 60),
-      blocks: [{ 
-        type: "INTERVAL", 
-        work_seconds: seq[0]?.seconds || 30, 
-        rest_seconds: 0, 
-        sets: rounds, 
-        sequence: seq 
-      }],
-      cues: { start:true, last_round:true, halfway: rounds>=8, tts:true },
-      debug: { used_ai:true, inferred_mode:"INTERVAL(sequence)" }
-    };
-  }
-  
-  // EMOM normalization
-  if (/(\bEMOM\b|every\s+minute)/i.test(text)) {
-    const minutes = ai?.total_minutes || num(text.match(/(\d{1,3})\s*-?\s*(?:min|minute)/i)?.[1]) || 20;
-    const { odd, even } = extractOddEven(text);
-    const instructions = [];
-    if (odd) instructions.push({ minute_mod: "odd", name: odd });
-    if (even) instructions.push({ minute_mod: "even", name: even });
-    if (!instructions.length) instructions.push({ name: "Work" });
-    return {
-      title: ai?.title || `${minutes}-min EMOM`,
-      total_minutes: minutes,
-      blocks: [{ type: "EMOM", minutes, instructions }],
-      cues: { start:true, last_round:true, halfway: minutes>=10, tts:true },
-      debug: { used_ai:true, inferred_mode:"EMOM", notes:"Normalized from AI" }
-    };
-  }
-  
-  // CIRCUIT normalization
-  if (ai?.type === "CIRCUIT" || ai?.workout_type === "CIRCUIT") {
-    const rounds = ai.rounds || 3;
-    const exercises = (ai.exercises || []).map((ex) => ({
-      name: ex.name || ex.exercise || "Exercise",
-      seconds: ex.duration_seconds || ex.duration || 30,
-      reps: ex.reps || undefined,
-      rest_after_seconds: ex.rest_after_seconds || 0,
+  } catch {}
+
+  // Common raw shape #1: { workout_type, rounds, exercises:[{name,duration}], total_minutes }
+  if (ai && ai.workout_type === "INTERVAL" && Array.isArray(ai.exercises)) {
+    const seq = ai.exercises.map(e => ({
+      name: e.name || "Work",
+      seconds: Number(e.duration || e.seconds || 20),
+      ...(String(e.name || "").toLowerCase().includes("rest") ? { rest_after_seconds: Number(e.duration || 0) } : {})
     }));
-    
-    return {
-      title: ai.title || "Circuit",
-      total_minutes: ai.total_minutes || Math.ceil((rounds * exercises.reduce((a,b)=>a + (b.seconds||30) + (b.rest_after_seconds||0),0)) / 60),
-      blocks: [{ type: "CIRCUIT", rounds, exercises, rest_between_rounds_seconds: 0 }],
-      cues: { start:true, last_round:true, halfway: rounds>=5, tts:true },
-      debug: { used_ai:true, inferred_mode:"CIRCUIT" }
+    const sets = Number(ai.rounds || ai.sets || 1);
+    const work = seq[0]?.seconds || 20;
+
+    const candidate = {
+      title: ai.title || "Intervals",
+      total_minutes: Number(ai.total_minutes || Math.ceil((sets * seq.reduce((a,b)=>a+b.seconds,0))/60) || 10),
+      blocks: [{ type:"INTERVAL", work_seconds: work, rest_seconds: 0, sets, sequence: seq }],
+      cues: { start:true, last_round:true, halfway: sets>=8, tts:true },
+      debug: { used_ai:true, inferred_mode:"INTERVAL(sequence)", notes:"normalized workout_type/exercises" }
     };
+    return candidate;
   }
-  
-  // TABATA normalization
-  if (ai?.type === "TABATA" || ai?.workout_type === "TABATA") {
-    const rounds = ai.rounds || 8;
-    const work = ai.work_seconds || ai.work || 20;
-    const rest = ai.rest_seconds || ai.rest || 10;
-    
-    return {
-      title: ai.title || `Tabata ${rounds}x${work}/${rest}`,
-      total_minutes: ai.total_minutes || Math.ceil((rounds*(work+rest))/60),
-      blocks: [{ type: "TABATA", rounds, work_seconds: work, rest_seconds: rest, exercise: "Tabata" }],
-      cues: { start:true, last_round:true, halfway: rounds>=8, tts:true },
-      debug: { used_ai:true, inferred_mode:"TABATA" }
+
+  // EMOM coercion if text says EMOM
+  if (/(?:\bEMOM\b|every\s+minute)/i.test(text)) {
+    const m = text.match(/(\d{1,3})\s*-?\s*(?:min|minute)/i);
+    const minutes = m ? parseInt(m[1],10) : Number(ai.total_minutes || 20);
+    const instr = [];
+    const odd = text.match(/odd[^a-z0-9]+([^.;\n]+)/i)?.[1]?.trim();
+    const even = text.match(/even[^a-z0-9]+([^.;\n]+)/i)?.[1]?.trim();
+    if (odd) instr.push({ minute_mod:"odd", name: odd });
+    if (even) instr.push({ minute_mod:"even", name: even });
+    if (!instr.length) instr.push({ name:"Work" });
+
+    const candidate = {
+      title: `${minutes}-min EMOM Workout`,
+      total_minutes: minutes,
+      blocks: [{ type:"EMOM", minutes, instructions: instr }],
+      cues: { start:true, last_round:true, halfway: minutes>=10, tts:true },
+      debug: { used_ai:true, inferred_mode:"EMOM", notes:"coerced due to EMOM text" }
     };
+    return candidate;
   }
-  
-  return null;
+
+  throw new Error("Unrecognized AI response");
 }
 
 app.get("/health", async () => ({ ok: true }));
@@ -205,13 +165,12 @@ app.get("/health", async () => ({ ok: true }));
 app.post("/generate", async (req, reply) => {
   const body = req.body || {};
   const text = String(body.text || "");
-  const user = body.user || { level: "beginner" };
 
-  console.log(`Processing: "${text.substring(0, 100)}..." for ${user.level} user`);
+  console.log(`Processing: "${text.substring(0, 100)}..."`);
 
   // Prefer AI first; deterministic as fallback
   try {
-    const prompt = `User level: ${user.level}.\nWorkout description:\n${text}\nReturn valid JSON only.`;
+    const prompt = `Workout description:\n${text}\nReturn valid JSON only.`;
     const resp = await openai.chat.completions.create({
       model: "gpt-4",
       temperature: 0.2,
