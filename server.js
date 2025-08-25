@@ -166,7 +166,7 @@ function normalizeAIToWorkoutJSON(ai, text){
   // CIRCUIT normalization
   if (ai?.type === "CIRCUIT" || ai?.workout_type === "CIRCUIT") {
     const rounds = ai.rounds || 3;
-    const exercises = (ai.exercises || []).map((ex: any) => ({
+    const exercises = (ai.exercises || []).map((ex) => ({
       name: ex.name || ex.exercise || "Exercise",
       seconds: ex.duration_seconds || ex.duration || 30,
       reps: ex.reps || undefined,
