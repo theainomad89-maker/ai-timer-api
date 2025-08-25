@@ -110,23 +110,43 @@ function deterministicParse(text) {
 function normalizeAIToWorkoutJSON(ai, text){
   // If already in expected shape
   if (ai && Array.isArray(ai.blocks)) return ai;
-  // INTERVAL with exercises array
-  if (ai?.type === "INTERVAL" && Array.isArray(ai.exercises)) {
+  
+  // INTERVAL with exercises array - handle multiple formats
+  if ((ai?.type === "INTERVAL" || ai?.workout_type === "INTERVAL") && Array.isArray(ai.exercises)) {
+    const rounds = ai.rounds || 10;
+    const seq = [];
+    
+    for (const ex of ai.exercises) {
+      const name = ex.name || ex.exercise || "Work";
+      const secs = ex.duration_seconds || ex.duration || 30;
+      
+      // Handle rest items by attaching to previous exercise
+      if (/rest/i.test(name)) {
+        if (seq.length > 0) {
+          seq[seq.length - 1].rest_after_seconds = secs;
+        }
+        continue;
+      }
+      
+      seq.push({ name, seconds: secs });
+    }
+    
     return {
       title: ai.title || "Intervals",
-      total_minutes: ai.total_minutes || Math.ceil((ai.rounds||10) * ai.exercises.reduce((a,e)=>a+(e.duration_seconds||30)+(e.rest_seconds||0),0) / 60),
-      blocks: [{
-        type: "INTERVAL",
-        work_seconds: ai.exercises[0]?.duration_seconds || 30,
-        rest_seconds: 0,
-        sets: ai.rounds || 10,
-        sequence: ai.exercises.map(e=>({ name: e.name || "Work", seconds: e.duration_seconds || 30, rest_after_seconds: e.rest_seconds || 0 }))
+      total_minutes: ai.total_minutes || Math.ceil((rounds * seq.reduce((a,b)=>a + b.seconds + (b.rest_after_seconds||0),0)) / 60),
+      blocks: [{ 
+        type: "INTERVAL", 
+        work_seconds: seq[0]?.seconds || 30, 
+        rest_seconds: 0, 
+        sets: rounds, 
+        sequence: seq 
       }],
-      cues: { start:true, last_round:true, halfway:true, tts:true },
+      cues: { start:true, last_round:true, halfway: rounds>=8, tts:true },
       debug: { used_ai:true, inferred_mode:"INTERVAL(sequence)" }
     };
   }
-  // EMOM
+  
+  // EMOM normalization
   if (/(\bEMOM\b|every\s+minute)/i.test(text)) {
     const minutes = ai?.total_minutes || num(text.match(/(\d{1,3})\s*-?\s*(?:min|minute)/i)?.[1]) || 20;
     const { odd, even } = extractOddEven(text);
@@ -142,6 +162,41 @@ function normalizeAIToWorkoutJSON(ai, text){
       debug: { used_ai:true, inferred_mode:"EMOM", notes:"Normalized from AI" }
     };
   }
+  
+  // CIRCUIT normalization
+  if (ai?.type === "CIRCUIT" || ai?.workout_type === "CIRCUIT") {
+    const rounds = ai.rounds || 3;
+    const exercises = (ai.exercises || []).map((ex: any) => ({
+      name: ex.name || ex.exercise || "Exercise",
+      seconds: ex.duration_seconds || ex.duration || 30,
+      reps: ex.reps || undefined,
+      rest_after_seconds: ex.rest_after_seconds || 0,
+    }));
+    
+    return {
+      title: ai.title || "Circuit",
+      total_minutes: ai.total_minutes || Math.ceil((rounds * exercises.reduce((a,b)=>a + (b.seconds||30) + (b.rest_after_seconds||0),0)) / 60),
+      blocks: [{ type: "CIRCUIT", rounds, exercises, rest_between_rounds_seconds: 0 }],
+      cues: { start:true, last_round:true, halfway: rounds>=5, tts:true },
+      debug: { used_ai:true, inferred_mode:"CIRCUIT" }
+    };
+  }
+  
+  // TABATA normalization
+  if (ai?.type === "TABATA" || ai?.workout_type === "TABATA") {
+    const rounds = ai.rounds || 8;
+    const work = ai.work_seconds || ai.work || 20;
+    const rest = ai.rest_seconds || ai.rest || 10;
+    
+    return {
+      title: ai.title || `Tabata ${rounds}x${work}/${rest}`,
+      total_minutes: ai.total_minutes || Math.ceil((rounds*(work+rest))/60),
+      blocks: [{ type: "TABATA", rounds, work_seconds: work, rest_seconds: rest, exercise: "Tabata" }],
+      cues: { start:true, last_round:true, halfway: rounds>=8, tts:true },
+      debug: { used_ai:true, inferred_mode:"TABATA" }
+    };
+  }
+  
   return null;
 }
 
@@ -171,23 +226,6 @@ app.post("/generate", async (req, reply) => {
     // Normalize to our schema
     const normalized = normalizeAIToWorkoutJSON(json, text);
     if (normalized) return reply.send(normalized);
-
-    // As a last tweak, coerce EMOM if text says so
-    if (/(\bEMOM\b|every\s+minute)/i.test(text)) {
-      const minutes = json?.total_minutes || num(text.match(/(\d{1,3})\s*-?\s*(?:min|minute)/i)?.[1]) || 20;
-      const { odd, even } = extractOddEven(text);
-      const instructions = [];
-      if (odd) instructions.push({ minute_mod: "odd", name: odd });
-      if (even) instructions.push({ minute_mod: "even", name: even });
-      if (!instructions.length) instructions.push({ name: "Work" });
-      return reply.send({
-        title: json?.title || `${minutes}-min EMOM`,
-        total_minutes: minutes,
-        blocks: [{ type: "EMOM", minutes, instructions }],
-        cues: { start:true, last_round:true, halfway: minutes>=10, tts:true },
-        debug: { used_ai:true, inferred_mode:"EMOM", notes:"Coerced to EMOM" }
-      });
-    }
 
     // If we reach here return original JSON
     json.debug = { ...(json.debug||{}), used_ai: true, notes: "Raw AI shape" };
