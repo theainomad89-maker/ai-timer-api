@@ -31,14 +31,18 @@ Rules:
 // ---------- Deterministic parsing helpers ----------
 const num = (s) => (s ? parseInt(s,10) : undefined);
 
+function extractOddEven(text){
+  const odd = text.match(/odd[^\w]+([^.;\n]+)/i)?.[1]?.trim();
+  const even = text.match(/even[^\w]+([^.;\n]+)/i)?.[1]?.trim();
+  return { odd, even };
+}
+
 function parseEMOM(text) {
   const m = text.match(/(\d{1,3})\s*-?\s*(?:min|minute)/i);
   const minutes = m ? parseInt(m[1],10) : undefined;
   if (!/(\bEMOM\b|every\s+minute)/i.test(text) || !minutes) return null;
 
-  // Odd/even detection
-  const odd = text.match(/odd[^\w]+([^.;\n]+)/i)?.[1]?.trim();
-  const even = text.match(/even[^\w]+([^.;\n]+)/i)?.[1]?.trim();
+  const { odd, even } = extractOddEven(text);
   const instructions = [];
   if (odd) instructions.push({ minute_mod: "odd", name: odd });
   if (even) instructions.push({ minute_mod: "even", name: even });
@@ -68,15 +72,13 @@ function parseTabata(text) {
 }
 
 function parseHiitSequence(text) {
-  // e.g. "HIIT, 20s A, 20s B, 20s C, rest. That's 1 round. Total 10 rounds"
   const rounds = num(text.match(/total\s+(\d{1,3})\s+rounds?/i)?.[1]) || num(text.match(/(\d{1,3})\s+rounds?/i)?.[1]);
   const items = [...text.matchAll(/(\d{1,3})\s*s(?:ec)?\s+([^,.;\n]+)/ig)].map(m=>({ seconds: parseInt(m[1],10), name: m[2].trim() }));
   if (!rounds || items.length<1) return null;
-  // If the last token includes "rest", treat as rest_between_rounds
   let rest_between = 0;
   if (/rest/i.test(text) && !items[items.length-1].name.toLowerCase().includes("rest")) {
     const restm = text.match(/rest[^\d]*(\d{1,3})?/i);
-    rest_between = restm?.[1] ? parseInt(restm[1],10) : 30; // default 30s
+    rest_between = restm?.[1] ? parseInt(restm[1],10) : 30;
   }
   return {
     title: `HIIT ${rounds} rounds`,
@@ -88,7 +90,6 @@ function parseHiitSequence(text) {
 }
 
 function parseGenericIntervals(text) {
-  // e.g. "10 rounds: 30s work, 15s rest"
   const rounds = num(text.match(/(\d{1,3})\s+rounds?/i)?.[1]);
   const work = num(text.match(/(\d{1,3})\s*s(?:ec)?\s*(?:work|on)/i)?.[1]) || num(text.match(/(\d{1,3})\s*s(?!.*rest)/i)?.[1]);
   const rest = num(text.match(/(\d{1,3})\s*s(?:ec)?\s*rest/i)?.[1]);
@@ -106,12 +107,50 @@ function deterministicParse(text) {
   return parseEMOM(text) || parseTabata(text) || parseHiitSequence(text) || parseGenericIntervals(text);
 }
 
+function normalizeAIToWorkoutJSON(ai, text){
+  // If already in expected shape
+  if (ai && Array.isArray(ai.blocks)) return ai;
+  // INTERVAL with exercises array
+  if (ai?.type === "INTERVAL" && Array.isArray(ai.exercises)) {
+    return {
+      title: ai.title || "Intervals",
+      total_minutes: ai.total_minutes || Math.ceil((ai.rounds||10) * ai.exercises.reduce((a,e)=>a+(e.duration_seconds||30)+(e.rest_seconds||0),0) / 60),
+      blocks: [{
+        type: "INTERVAL",
+        work_seconds: ai.exercises[0]?.duration_seconds || 30,
+        rest_seconds: 0,
+        sets: ai.rounds || 10,
+        sequence: ai.exercises.map(e=>({ name: e.name || "Work", seconds: e.duration_seconds || 30, rest_after_seconds: e.rest_seconds || 0 }))
+      }],
+      cues: { start:true, last_round:true, halfway:true, tts:true },
+      debug: { used_ai:true, inferred_mode:"INTERVAL(sequence)" }
+    };
+  }
+  // EMOM
+  if (/(\bEMOM\b|every\s+minute)/i.test(text)) {
+    const minutes = ai?.total_minutes || num(text.match(/(\d{1,3})\s*-?\s*(?:min|minute)/i)?.[1]) || 20;
+    const { odd, even } = extractOddEven(text);
+    const instructions = [];
+    if (odd) instructions.push({ minute_mod: "odd", name: odd });
+    if (even) instructions.push({ minute_mod: "even", name: even });
+    if (!instructions.length) instructions.push({ name: "Work" });
+    return {
+      title: ai?.title || `${minutes}-min EMOM`,
+      total_minutes: minutes,
+      blocks: [{ type: "EMOM", minutes, instructions }],
+      cues: { start:true, last_round:true, halfway: minutes>=10, tts:true },
+      debug: { used_ai:true, inferred_mode:"EMOM", notes:"Normalized from AI" }
+    };
+  }
+  return null;
+}
+
 app.get("/health", async () => ({ ok: true }));
 
 app.post("/generate", async (req, reply) => {
   const body = req.body || {};
   const text = String(body.text || "");
-  const user = body.user || { level: "beginner" }; // {beginner|intermediate|advanced}
+  const user = body.user || { level: "beginner" };
 
   console.log(`Processing: "${text.substring(0, 100)}..." for ${user.level} user`);
 
@@ -127,19 +166,31 @@ app.post("/generate", async (req, reply) => {
     console.log("OpenAI response:", raw.substring(0, 100) + "...");
 
     let json;
-    try {
-      json = JSON.parse(raw);
-    } catch (parseError) {
-      throw new Error("Invalid JSON from OpenAI");
+    try { json = JSON.parse(raw); } catch { throw new Error("Invalid JSON from OpenAI"); }
+
+    // Normalize to our schema
+    const normalized = normalizeAIToWorkoutJSON(json, text);
+    if (normalized) return reply.send(normalized);
+
+    // As a last tweak, coerce EMOM if text says so
+    if (/(\bEMOM\b|every\s+minute)/i.test(text)) {
+      const minutes = json?.total_minutes || num(text.match(/(\d{1,3})\s*-?\s*(?:min|minute)/i)?.[1]) || 20;
+      const { odd, even } = extractOddEven(text);
+      const instructions = [];
+      if (odd) instructions.push({ minute_mod: "odd", name: odd });
+      if (even) instructions.push({ minute_mod: "even", name: even });
+      if (!instructions.length) instructions.push({ name: "Work" });
+      return reply.send({
+        title: json?.title || `${minutes}-min EMOM`,
+        total_minutes: minutes,
+        blocks: [{ type: "EMOM", minutes, instructions }],
+        cues: { start:true, last_round:true, halfway: minutes>=10, tts:true },
+        debug: { used_ai:true, inferred_mode:"EMOM", notes:"Coerced to EMOM" }
+      });
     }
 
-    if (/(\bEMOM\b|every\s+minute)/i.test(text) && json.blocks?.[0]?.type !== "EMOM") {
-      const minutes = json.total_minutes || num(text.match(/(\d{1,3})\s*-?\s*(?:min|minute)/i)?.[1]) || 20;
-      json.blocks = [{ type: "EMOM", minutes, instructions: [{ name: "Work" }] }];
-      json.debug = { ...(json.debug||{}), notes: "Coerced to EMOM due to input text", inferred_mode: "EMOM" };
-    }
-
-    json.debug = { ...(json.debug||{}), used_ai: true };
+    // If we reach here return original JSON
+    json.debug = { ...(json.debug||{}), used_ai: true, notes: "Raw AI shape" };
     return reply.send(json);
   } catch (aiError) {
     console.warn("AI failed, using deterministic parser:", aiError?.message || aiError);
