@@ -18,15 +18,22 @@ app.addHook('onRequest', (request, reply, done) => {
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-const SYSTEM = `You convert messy workout descriptions into a strict JSON schema.
-Rules:
-- Output ONLY JSON matching the schema.
-- If ambiguous, infer safe defaults: seconds if unit missing; rest 15–30s.
-- Support EMOM, INTERVAL (optionally with a per-set sequence), CIRCUIT, TABATA.
-- Include title, total_minutes.
-- For EMOM: minutes == total minutes; allow odd/even instructions.
-- For text like "Odd: X, Even: Y", set minute_mod accordingly.
-- Never output prose. Only JSON.`;
+const SYSTEM = `You are a workout timer expert. Convert workout descriptions into precise, runnable timer sequences.
+
+CRITICAL RULES:
+1. Output ONLY valid JSON - no prose, no explanations
+2. For HIIT/Interval workouts: Each exercise gets its own timer event, rest periods are separate events
+3. For EMOM: Each minute is a separate event with proper odd/even labeling
+4. Always include total_minutes calculated from the actual workout duration
+5. Never treat "rest" as an exercise - it's a rest period between exercises
+6. If text says "rest" after exercises, create proper rest events
+
+EXAMPLES:
+- "20s A, 20s B, rest" → sequence: [A(20s), B(20s), Rest(15s)]
+- "EMOM: odd burpees, even plank" → 60s events alternating between exercises
+- "10 rounds: 30s work, 15s rest" → 10 work events + 9 rest events
+
+Return JSON with: title, total_minutes, blocks[].`;
 
 // ---------- Deterministic parsing helpers ----------
 const num = (s) => (s ? parseInt(s,10) : undefined);
@@ -107,6 +114,51 @@ function deterministicParse(text) {
   return parseEMOM(text) || parseTabata(text) || parseHiitSequence(text) || parseGenericIntervals(text);
 }
 
+function analyzeAndFixSequence(sequence, text) {
+  if (!Array.isArray(sequence)) return sequence;
+  
+  const fixed = [];
+  let hasRest = false;
+  
+  for (let i = 0; i < sequence.length; i++) {
+    const item = sequence[i];
+    const name = String(item.name || "").toLowerCase();
+    
+    // If this is a rest item, convert it properly
+    if (name.includes("rest") || name === "rest") {
+      hasRest = true;
+      // Remove the rest item from sequence - it will be added as rest_after_seconds
+      continue;
+    }
+    
+    // Check if next item is rest or if we need to add rest
+    let restAfter = 0;
+    if (i < sequence.length - 1) {
+      const nextItem = sequence[i + 1];
+      const nextName = String(nextItem.name || "").toLowerCase();
+      if (nextName.includes("rest") || nextName === "rest") {
+        restAfter = nextItem.duration || nextItem.seconds || 15;
+        hasRest = true;
+      }
+    }
+    
+    fixed.push({
+      name: item.name || item.exercise || "Work",
+      seconds: Number(item.duration || item.seconds || item.duration_seconds || 20),
+      ...(restAfter > 0 ? { rest_after_seconds: restAfter } : {})
+    });
+  }
+  
+  // If no rest was found but text mentions rest, add default rest
+  if (!hasRest && /rest/i.test(text)) {
+    if (fixed.length > 0) {
+      fixed[fixed.length - 1].rest_after_seconds = 15; // Default 15s rest
+    }
+  }
+  
+  return fixed;
+}
+
 function normalizeAIToWorkoutJSON(ai, text) {
   // Already in our schema?
   try { 
@@ -118,17 +170,13 @@ function normalizeAIToWorkoutJSON(ai, text) {
 
   // Common raw shape #1: { workout_type, rounds, exercises:[{name,duration}], total_minutes }
   if (ai && ai.workout_type === "INTERVAL" && Array.isArray(ai.exercises)) {
-    const seq = ai.exercises.map(e => ({
-      name: e.name || "Work",
-      seconds: Number(e.duration || e.seconds || 20),
-      ...(String(e.name || "").toLowerCase().includes("rest") ? { rest_after_seconds: Number(e.duration || 0) } : {})
-    }));
+    const seq = analyzeAndFixSequence(ai.exercises, text);
     const sets = Number(ai.rounds || ai.sets || 1);
     const work = seq[0]?.seconds || 20;
 
     const candidate = {
       title: ai.title || "Intervals",
-      total_minutes: Number(ai.total_minutes || Math.ceil((sets * seq.reduce((a,b)=>a+b.seconds,0))/60) || 10),
+      total_minutes: Number(ai.total_minutes || Math.ceil((sets * seq.reduce((a,b)=>a+b.seconds+(b.rest_after_seconds||0),0))/60) || 10),
       blocks: [{ type:"INTERVAL", work_seconds: work, rest_seconds: 0, sets, sequence: seq }],
       cues: { start:true, last_round:true, halfway: sets>=8, tts:true },
       debug: { used_ai:true, inferred_mode:"INTERVAL(sequence)", notes:"normalized workout_type/exercises" }
@@ -170,10 +218,10 @@ app.post("/generate", async (req, reply) => {
 
   // Prefer AI first; deterministic as fallback
   try {
-    const prompt = `Workout description:\n${text}\nReturn valid JSON only.`;
+    const prompt = `Workout description:\n${text}\n\nAnalyze this carefully and create a precise timer sequence. Remember: rest periods are separate from exercises, and each exercise gets its own timer event. Return valid JSON only.`;
     const resp = await openai.chat.completions.create({
       model: "gpt-4",
-      temperature: 0.2,
+      temperature: 0.1, // Lower temperature for more consistent output
       messages: [ { role: "system", content: SYSTEM }, { role: "user", content: prompt } ],
     });
     const raw = resp.choices?.[0]?.message?.content || "";
