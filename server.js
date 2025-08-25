@@ -115,14 +115,7 @@ app.post("/generate", async (req, reply) => {
 
   console.log(`Processing: "${text.substring(0, 100)}..." for ${user.level} user`);
 
-  // 1) Deterministic shortcut
-  const det = deterministicParse(text);
-  if (det) {
-    console.log("Using deterministic parse:", det.debug.inferred_mode);
-    return reply.send(det);
-  }
-
-  // 2) OpenAI generation
+  // Prefer AI first; deterministic as fallback
   try {
     const prompt = `User level: ${user.level}.\nWorkout description:\n${text}\nReturn valid JSON only.`;
     const resp = await openai.chat.completions.create({
@@ -130,30 +123,29 @@ app.post("/generate", async (req, reply) => {
       temperature: 0.2,
       messages: [ { role: "system", content: SYSTEM }, { role: "user", content: prompt } ],
     });
-    
     const raw = resp.choices?.[0]?.message?.content || "";
     console.log("OpenAI response:", raw.substring(0, 100) + "...");
-    
-    try {
-      const json = JSON.parse(raw);
-      
-      // 3) Post-process: if text contains EMOM but block isn't EMOM, coerce
-      if (/(\bEMOM\b|every\s+minute)/i.test(text) && json.blocks?.[0]?.type !== "EMOM") {
-        const minutes = json.total_minutes || num(text.match(/(\d{1,3})\s*-?\s*(?:min|minute)/i)?.[1]) || 20;
-        json.blocks = [{ type: "EMOM", minutes, instructions: [{ name: "Work" }] }];
-        json.debug = { ...(json.debug||{}), notes: "Coerced to EMOM due to input text", inferred_mode: "EMOM" };
-      }
 
-      json.debug = { ...(json.debug||{}), used_ai: true };
-      return reply.send(json);
+    let json;
+    try {
+      json = JSON.parse(raw);
     } catch (parseError) {
-      console.error("JSON parse error:", parseError);
       throw new Error("Invalid JSON from OpenAI");
     }
+
+    if (/(\bEMOM\b|every\s+minute)/i.test(text) && json.blocks?.[0]?.type !== "EMOM") {
+      const minutes = json.total_minutes || num(text.match(/(\d{1,3})\s*-?\s*(?:min|minute)/i)?.[1]) || 20;
+      json.blocks = [{ type: "EMOM", minutes, instructions: [{ name: "Work" }] }];
+      json.debug = { ...(json.debug||{}), notes: "Coerced to EMOM due to input text", inferred_mode: "EMOM" };
+    }
+
+    json.debug = { ...(json.debug||{}), used_ai: true };
+    return reply.send(json);
   } catch (aiError) {
-    console.error("OpenAI error:", aiError.message);
-    
-    // 4) Final fallback: 20x40/20
+    console.warn("AI failed, using deterministic parser:", aiError?.message || aiError);
+    const det = deterministicParse(text);
+    if (det) return reply.send(det);
+
     const fb = {
       title: "Fallback 20x40/20",
       total_minutes: 20,
