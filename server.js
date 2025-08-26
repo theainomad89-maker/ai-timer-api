@@ -51,7 +51,7 @@ REQUIRED EXACT SCHEMA:
         {
           "name": "string",
           "seconds": number,
-          "reps": number
+          "reps": number | string
         }
       ],
       "exercise": "string",        // ONLY for TABATA
@@ -68,12 +68,23 @@ EXACT RULES:
 5. INTERVAL with sequence: Add "sequence" array when multiple exercises per set
 6. Rest periods: Only add rest between rounds, not after every exercise
 
+IMPORTANT WORKOUT INTERPRETATION RULES:
+- When text says "1 minute of: X, then Y" → This means 1 continuous minute where you do X first, then Y fills remaining time
+- When text says "45 reps" → This is a target, not a time limit
+- When text says "Max reps in remaining time" → This means fill whatever time is left after the first exercise
+- Time caps (like "1 minute") apply to the ENTIRE round, not individual exercises
+- Rep targets are goals within the time cap, not separate timed intervals
+
 EXAMPLES:
 EMOM: {"type": "EMOM", "minutes": 20, "instructions": [{"minute_mod": "odd", "name": "Burpees"}, {"minute_mod": "even", "name": "Plank"}]}
 TABATA: {"type": "TABATA", "rounds": 8, "work_seconds": 20, "rest_seconds": 10, "exercise": "Mixed"}
 CIRCUIT: {"type": "CIRCUIT", "rounds": 5, "exercises": [{"name": "Pushups", "seconds": 30}, {"name": "Squats", "seconds": 30}], "rest_between_rounds_seconds": 15}
 INTERVAL: {"type": "INTERVAL", "sets": 10, "work_seconds": 30, "rest_seconds": 15}
 INTERVAL with sequence: {"type": "INTERVAL", "sets": 10, "work_seconds": 20, "rest_seconds": 0, "sequence": [{"name": "Burpees", "seconds": 20}, {"name": "Mountain Climbers", "seconds": 20, "rest_after_seconds": 15}]}
+
+TIME-BASED WORKOUT EXAMPLE:
+"1 minute of: 45 double-unders, max kettlebell swings in remaining time" → 
+{"type": "INTERVAL", "sets": 1, "work_seconds": 60, "rest_seconds": 0, "sequence": [{"name": "45 Double-Unders", "seconds": 60}, {"name": "Max Kettlebell Swings", "seconds": 0, "rest_after_seconds": 0}]}
 
 Remember: Output ONLY valid JSON matching this exact schema.`;
 
