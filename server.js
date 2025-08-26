@@ -185,8 +185,67 @@ function parseGenericIntervals(text) {
   };
 }
 
+function parseWorkRestPattern(text) {
+  // Parse pattern like "4 Rounds\n:45 WORK // :15 REST\nRun\nDB Goblet Squat\n*Rest 2:30 after each round"
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+  
+  // Check if this matches our pattern
+  const hasWorkRestPattern = lines.some(l => l.includes(':45 WORK // :15 REST') || l.includes('WORK // :15 REST'));
+  const hasRestAfterRounds = lines.some(l => l.includes('Rest') && l.includes('after each round'));
+  
+  if (!hasWorkRestPattern || !hasRestAfterRounds) return null;
+  
+  // Extract number of rounds
+  const roundMatch = text.match(/(\d+)\s*Rounds?/i);
+  if (!roundMatch) return null;
+  const rounds = parseInt(roundMatch[1]);
+  
+  // Extract rest time between rounds
+  const restMatch = text.match(/Rest\s+(\d+):(\d+)\s+after\s+each\s+round/i);
+  let restBetweenRounds = 150; // default 2:30
+  if (restMatch) {
+    const minutes = parseInt(restMatch[1]);
+    const seconds = parseInt(restMatch[2]);
+    restBetweenRounds = minutes * 60 + seconds;
+  }
+  
+  // Extract exercises (lines that don't contain special keywords)
+  const exercises = [];
+  const skipKeywords = ['Rounds', 'WORK', 'REST', 'Rest', 'after', 'each', 'round'];
+  
+  for (const line of lines) {
+    if (line && !skipKeywords.some(keyword => line.includes(keyword)) && 
+        !line.match(/^\d+:/) && !line.includes('//')) {
+      exercises.push(line);
+    }
+  }
+  
+  if (exercises.length === 0) return null;
+  
+  // Build sequence with 15s rest after each exercise (except the last)
+  const sequence = exercises.map((exercise, index) => ({
+    name: exercise,
+    seconds: 45,
+    rest_after_seconds: index < exercises.length - 1 ? 15 : undefined
+  }));
+  
+  return {
+    title: `${rounds} Rounds Workout`,
+    total_minutes: Math.ceil((rounds * (exercises.length * 45 + (exercises.length - 1) * 15) + (rounds - 1) * restBetweenRounds) / 60),
+    blocks: [{
+      type: "INTERVAL",
+      sets: rounds,
+      work_seconds: 45,
+      rest_seconds: restBetweenRounds,
+      sequence: sequence
+    }],
+    cues: { start: true, last_round: true, halfway: rounds >= 8, tts: true },
+    debug: { used_ai: false, inferred_mode: "INTERVAL", notes: "parsed from work/rest pattern" }
+  };
+}
+
 function deterministicParse(text) {
-  return parseEMOM(text) || parseTabata(text) || parseHiitSequence(text) || parseGenericIntervals(text);
+  return parseEMOM(text) || parseTabata(text) || parseHiitSequence(text) || parseGenericIntervals(text) || parseWorkRestPattern(text);
 }
 
 function analyzeAndFixSequence(sequence, text) {
