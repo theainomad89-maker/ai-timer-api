@@ -75,6 +75,13 @@ IMPORTANT WORKOUT INTERPRETATION RULES:
 - Time caps (like "1 minute") apply to the ENTIRE round, not individual exercises
 - Rep targets are goals within the time cap, not separate timed intervals
 
+SPECIFIC WORKOUT PATTERN RECOGNITION:
+- When you see ":45 WORK // :15 REST" → This means each exercise gets 45 seconds, then 15 seconds rest
+- When you see "*Rest 2:30 after each round" → This means 2 minutes 30 seconds rest between rounds
+- This pattern should use "type": "INTERVAL" with "sequence" array
+- Each exercise in sequence gets its own rest_after_seconds: 15
+- The rest_between_rounds_seconds should be 150 (2:30 = 150 seconds)
+
 EXAMPLES:
 EMOM: {"type": "EMOM", "minutes": 20, "instructions": [{"minute_mod": "odd", "name": "Burpees"}, {"minute_mod": "even", "name": "Plank"}]}
 TABATA: {"type": "TABATA", "rounds": 8, "work_seconds": 20, "rest_seconds": 10, "exercise": "Mixed"}
@@ -82,17 +89,24 @@ CIRCUIT: {"type": "CIRCUIT", "rounds": 5, "exercises": [{"name": "Pushups", "sec
 INTERVAL: {"type": "INTERVAL", "sets": 10, "work_seconds": 30, "rest_seconds": 15}
 INTERVAL with sequence: {"type": "INTERVAL", "sets": 10, "work_seconds": 20, "rest_seconds": 0, "sequence": [{"name": "Burpees", "seconds": 20}, {"name": "Mountain Climbers", "seconds": 20, "rest_after_seconds": 15}]}
 
-TIME-BASED WORKOUT EXAMPLE:
-"1 minute of: 45 double-unders, max kettlebell swings in remaining time" → 
-{"type": "INTERVAL", "sets": 6, "work_seconds": 60, "rest_seconds": 60, "sequence": [{"name": "45 Double-Unders + Max Kettlebell Swings", "seconds": 60}]}
-
-CRITICAL INTERPRETATION RULES:
-- "1 minute of: X, then Y" → 1 minute TOTAL for the round, X and Y share that time
-- "45 reps" → Target number, not time limit
-- "Max reps in remaining time" → Fill whatever time is left after first exercise
-- Time caps apply to ENTIRE round, not individual exercises
-- Use INTERVAL type with sequence when exercises share time within a round
-- Use CIRCUIT type when each exercise gets its own dedicated time slot
+SPECIFIC PATTERN EXAMPLE:
+"4 Rounds\n:45 WORK // :15 REST\nRun\nDB Goblet Squat\nRun\nDB Curl + Press\nRun\nBox Step Up\nRun\nPlank\n*Rest 2:30 after each round" →
+{
+  "type": "INTERVAL",
+  "sets": 4,
+  "work_seconds": 45,
+  "rest_seconds": 150,
+  "sequence": [
+    {"name": "Run", "seconds": 45, "rest_after_seconds": 15},
+    {"name": "DB Goblet Squat", "seconds": 45, "rest_after_seconds": 15},
+    {"name": "Run", "seconds": 45, "rest_after_seconds": 15},
+    {"name": "DB Curl + Press", "seconds": 45, "rest_after_seconds": 15},
+    {"name": "Run", "seconds": 45, "rest_after_seconds": 15},
+    {"name": "Box Step Up", "seconds": 45, "rest_after_seconds": 15},
+    {"name": "Run", "seconds": 45, "rest_after_seconds": 15},
+    {"name": "Plank", "seconds": 45}
+  ]
+}
 
 Remember: Output ONLY valid JSON matching this exact schema.`;
 
