@@ -84,7 +84,15 @@ INTERVAL with sequence: {"type": "INTERVAL", "sets": 10, "work_seconds": 20, "re
 
 TIME-BASED WORKOUT EXAMPLE:
 "1 minute of: 45 double-unders, max kettlebell swings in remaining time" → 
-{"type": "INTERVAL", "sets": 1, "work_seconds": 60, "rest_seconds": 0, "sequence": [{"name": "45 Double-Unders", "seconds": 60}, {"name": "Max Kettlebell Swings", "seconds": 0, "rest_after_seconds": 0}]}
+{"type": "INTERVAL", "sets": 6, "work_seconds": 60, "rest_seconds": 60, "sequence": [{"name": "45 Double-Unders + Max Kettlebell Swings", "seconds": 60}]}
+
+CRITICAL INTERPRETATION RULES:
+- "1 minute of: X, then Y" → 1 minute TOTAL for the round, X and Y share that time
+- "45 reps" → Target number, not time limit
+- "Max reps in remaining time" → Fill whatever time is left after first exercise
+- Time caps apply to ENTIRE round, not individual exercises
+- Use INTERVAL type with sequence when exercises share time within a round
+- Use CIRCUIT type when each exercise gets its own dedicated time slot
 
 Remember: Output ONLY valid JSON matching this exact schema.`;
 
